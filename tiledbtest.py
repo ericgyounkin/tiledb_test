@@ -61,7 +61,7 @@ def build_finalized_time_from_dataset(ds: xr.Dataset):
     # convert to utc timestamp, to integer seconds
     base_time = (base_time - np.datetime64(0, 's')) / np.timedelta64(1, 's')
     finalized_time = (finalized_time - np.datetime64(0, 's')) / np.timedelta64(1, 's')
-    return base_time.astype(int), finalized_time.astype(int)
+    return base_time, finalized_time
 
 
 # get the new time dimension arrays
@@ -71,18 +71,86 @@ basetime, newtime = build_finalized_time_from_dataset(ds)
 new_ds = xr.Dataset(data_vars={'z': (['time', 'isobaricInhPa', 'latitude', 'longitude'], np.concatenate([ds.z.values[:, i, :, :] for i in range(ds.time.shape[0])])),
                                't': (['time', 'isobaricInhPa', 'latitude', 'longitude'], np.concatenate([ds.t.values[:, i, :, :] for i in range(ds.time.shape[0])]))},
                     coords={'time': newtime,
-                            'isobaricInhPa': ds.isobaricInhPa.drop('step').astype(int), 'latitude': ds.latitude.drop('step').astype(int),
-                            'longitude': ds.longitude.drop('step').astype(int)}
+                            'isobaricInhPa': ds.isobaricInhPa.drop('step'), 'latitude': ds.latitude.drop('step'),
+                            'longitude': ds.longitude.drop('step')}
                     )
+
+# >>> new_ds
+# <xarray.Dataset>
+# Dimensions:        (time: 40, isobaricInhPa: 2, latitude: 61, longitude: 120)
+# Coordinates:
+#   * time           (time) float64 1.483e+09 1.483e+09 ... 1.483e+09 1.483e+09
+#   * isobaricInhPa  (isobaricInhPa) float64 850.0 500.0
+#   * latitude       (latitude) float64 90.0 87.0 84.0 81.0 ... -84.0 -87.0 -90.0
+#   * longitude      (longitude) float64 0.0 3.0 6.0 9.0 ... 351.0 354.0 357.0
+# Data variables:
+#     z              (time, isobaricInhPa, latitude, longitude) float32 1.42e+0...
+#     t              (time, isobaricInhPa, latitude, longitude) float32 252.7 ....
 
 # save to tiledb
 output_tiledb = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'era5tiledb')
 ds_dataframe = new_ds.to_dataframe()
 
-tiledb.from_pandas(output_tiledb, ds_dataframe)
+# >>> ds_dataframe
+#                                                           z           t
+# time         isobaricInhPa latitude longitude
+# 1.483229e+09 850.0          90.0    0.0        14201.753906  252.663147
+#                                     3.0        14201.753906  252.663147
+#                                     6.0        14201.753906  252.663147
+#                                     9.0        14201.753906  252.663147
+#                                     12.0       14201.753906  252.663147
+#                                                      ...         ...
+# 1.483359e+09 500.0         -90.0    345.0      51149.941406  240.378220
+#                                     348.0      51149.941406  240.378220
+#                                     351.0      51149.941406  240.378220
+#                                     354.0      51149.941406  240.378220
+#                                     357.0      51149.941406  240.378220
+# [585600 rows x 2 columns]
 
-# reload to check out the data
+tiledb.from_pandas(output_tiledb, ds_dataframe)
+# tiledb.cc.TileDBError: [TileDB::ArraySchema] Error: Cannot set domain; Dense arrays do not support dimension datatype 'FLOAT64'
+# in addition, found other errors on trying to even use integer coordinates like
+# IndexError: index out of bounds <todo>
+
+# reload to check out the data (Never gets this far)
 reload_ds = xr.open_dataset(output_tiledb, engine='tiledb')
 
 # I believe this should work, but I keep running into issues with expected sizes of arrays written to disk
 # I need to experiment more with creating the tiledb schema from scratch to better understand the format.
+
+import tiledb
+import numpy as np
+
+x_size = 1000
+y_size = 1000
+schema = tiledb.ArraySchema(
+    domain=tiledb.Domain(
+        tiledb.Dim("x", domain=(0, x_size - 1), dtype=np.uint64),
+        tiledb.Dim("y", domain=(0, y_size - 1), dtype=np.uint64)
+    ),
+    attrs=(
+        tiledb.Attr("survey1", np.float64),),
+)
+
+uri1 = r'C:\Users\eyou1\Downloads\tiledb_test3'
+tiledb.Array.create(uri1, schema)
+
+with tiledb.open(uri1, mode="w") as array:
+    array[:, :] = {"survey1": np.random.rand(x_size, y_size)}
+
+tiledb.array_fragments(uri1)
+# tiledb.array_fragments(uri1).timestamp_range
+# ((1666972369899, 1666972369899), (1666973013988, 1666973013988))
+
+with tiledb.open(uri1, mode="w") as array:
+    array[1, 1] = {"survey1": np.ones((1, 1))}
+
+with tiledb.open(uri1, mode="w") as array:
+    array[900, 900] = {"survey1": np.ones((1, 1))}
+
+tiledb.array_fragments(uri1)
+# tiledb.array_fragments(uri1).timestamp_range
+# ((1666972369899, 1666972369899), (1666973013988, 1666973013988))
+
+tiledb.consolidate(uri1)
+tiledb.vacuum(uri1)
